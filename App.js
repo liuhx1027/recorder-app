@@ -9,7 +9,8 @@ import {
   Text,
   TouchableHighlight,
   View,
-  Button
+  Button,
+  AsyncStorage
 } from "react-native";
 import { Audio } from "expo-av";
 import * as FileSystem from "expo-file-system";
@@ -32,13 +33,14 @@ import {
   DISABLED_OPACITY,
   RATE_SCALE
 } from "./App.style";
+import { Ionicons, AntDesign } from "@expo/vector-icons";
 
 export default class App extends React.Component {
   constructor(props) {
     super(props);
     this.recording = null;
     this.sound = null;
-    this.currentSentence = 0;
+    this.simpleSound = null;
     this.isSeeking = false;
     this.shouldPlayAtEndOfSeek = false;
     this.state = {
@@ -55,7 +57,8 @@ export default class App extends React.Component {
       fontLoaded: false,
       shouldCorrectPitch: true,
       volume: 1.0,
-      rate: 1.0
+      rate: 1.0,
+      currentSentence: 0
     };
     this.recordingSettings = JSON.parse(
       JSON.stringify(Audio.RECORDING_OPTIONS_PRESET_HIGH_QUALITY)
@@ -72,6 +75,7 @@ export default class App extends React.Component {
       this.setState({ fontLoaded: true });
     })();
     this._askForPermissions();
+    this._loadCurrentSentenceIndex();
   }
 
   _askForPermissions = async () => {
@@ -83,17 +87,25 @@ export default class App extends React.Component {
 
   _updateScreenForSoundStatus = status => {
     if (status.isLoaded) {
-      this.setState({
-        soundDuration: status.durationMillis,
-        soundPosition: status.positionMillis,
-        shouldPlay: status.shouldPlay,
-        isPlaying: status.isPlaying,
-        rate: status.rate,
-        muted: status.isMuted,
-        volume: status.volume,
-        shouldCorrectPitch: status.shouldCorrectPitch,
-        isPlaybackAllowed: true
-      });
+      if (status.positionMillis == status.durationMillis) {
+        this.setState({
+          ...this.state,
+          soundPosition: 0
+        });
+        this.sound.stopAsync();
+      } else {
+        this.setState({
+          soundDuration: status.durationMillis,
+          soundPosition: status.positionMillis,
+          shouldPlay: status.shouldPlay,
+          isPlaying: status.isPlaying,
+          rate: status.rate,
+          muted: status.isMuted,
+          volume: status.volume,
+          shouldCorrectPitch: status.shouldCorrectPitch,
+          isPlaybackAllowed: true
+        });
+      }
     } else {
       this.setState({
         soundDuration: null,
@@ -230,24 +242,6 @@ export default class App extends React.Component {
     }
   };
 
-  _trySetRate = async (rate, shouldCorrectPitch) => {
-    if (this.sound != null) {
-      try {
-        await this.sound.setRateAsync(rate, shouldCorrectPitch);
-      } catch (error) {
-        // Rate changing could not be performed, possibly because the client's Android API is too old.
-      }
-    }
-  };
-
-  _onRateSliderSlidingComplete = async value => {
-    this._trySetRate(value * RATE_SCALE, this.state.shouldCorrectPitch);
-  };
-
-  _onPitchCorrectionPressed = async value => {
-    this._trySetRate(this.state.rate, !this.state.shouldCorrectPitch);
-  };
-
   _onSeekSliderValueChange = value => {
     if (this.sound != null && !this.isSeeking) {
       this.isSeeking = true;
@@ -314,6 +308,48 @@ export default class App extends React.Component {
     return `${this._getMMSSFromMillis(0)}`;
   }
 
+  _saveCurrentSentenceIndex() {
+    AsyncStorage.setItem(
+      "CurrentSentenceIndex",
+      this.state.currentSentence.toString(),
+      _error => {
+        if (!!_error) alert(_error);
+      }
+    );
+  }
+
+  _loadCurrentSentenceIndex() {
+    const _this = this;
+    AsyncStorage.getItem("CurrentSentenceIndex", (error, result) => {
+      if (!error) {
+        if (!!result) _this.setState({ currentSentence: Number(result) });
+      } else {
+        alert("error when getting current index");
+      }
+    });
+  }
+
+  _playCurrent() {
+    if (this.simpleSound) {
+      this.simpleSound.setPositionAsync(0);
+      this.simpleSound.playAsync();
+      return;
+    }
+
+    this.simpleSound = new Sound();
+    const position = this.state.currentSentence.toString();
+    const url = `https://s3.eu-central-1.amazonaws.com/liutaoran.com/audio/10_spektrum_a2-1_${
+      position.length > 1 ? position : "0" + position
+    }.mp3`;
+    this.simpleSound
+      .loadAsync({
+        uri: url
+      })
+      .then(() => {
+        this.simpleSound.playAsync();
+      });
+  }
+
   render() {
     if (!this.state.fontLoaded) {
       return <View style={styles.emptyContainer} />;
@@ -357,79 +393,92 @@ export default class App extends React.Component {
               alignItems: "center"
             }}
           >
-            <View>
-              <Button
-                title="Previous"
-                onPress={() => {
-                  if (this.currentSentence > 0) this.currentSentence--;
-                  this.playCurrent();
-                }}
-              />
-            </View>
-            <View>
-              <Button title="Play" onPress={() => this.playCurrent()} />
-            </View>
-            <View>
-              <Button
-                title="Next"
-                onPress={() => {
-                  this.currentSentence++;
-                  this.playCurrent();
-                }}
-              />
-            </View>
-          </View>
-          <View style={styles.recordingContainer}>
-            <View />
-            <TouchableHighlight
-              underlayColor={BACKGROUND_COLOR}
-              style={styles.wrapper}
-              onPress={this._onRecordPressed}
-              disabled={this.state.isLoading}
+            <View
+              style={{
+                flex: 2,
+                justifyContent: "center",
+                alignItems: "center"
+              }}
             >
-              <Image style={styles.image} source={ICON_RECORD_BUTTON.module} />
-            </TouchableHighlight>
-            <View style={styles.recordingDataContainer}>
-              <View />
-              <Text
-                style={[styles.liveText, { fontFamily: "cutive-mono-regular" }]}
+              <TouchableHighlight
+                underlayColor={BACKGROUND_COLOR}
+                onPress={() => {
+                  this.setState({
+                    ...this.state,
+                    currentSentence: this.state.currentSentence - 1
+                  });
+                  this.simpleSound = null;
+                  this._saveCurrentSentenceIndex();
+
+                  this._playCurrent();
+                }}
               >
-                {this.state.isRecording ? "LIVE" : ""}
-              </Text>
-              <View style={styles.recordingDataRowContainer}>
-                <Image
-                  style={[
-                    styles.image,
-                    { opacity: this.state.isRecording ? 1.0 : 0.0 }
-                  ]}
-                  source={ICON_RECORDING.module}
-                />
-                <Text
-                  style={[
-                    styles.recordingTimestamp,
-                    { fontFamily: "cutive-mono-regular" }
-                  ]}
-                >
-                  {this._getRecordingTimestamp()}
-                </Text>
-              </View>
-              <View />
+                <AntDesign name="stepbackward" size={32} />
+              </TouchableHighlight>
             </View>
-            <View />
+            <View style={{ flex: 3, alignItems: "center" }}>
+              <TouchableHighlight
+                underlayColor={BACKGROUND_COLOR}
+                onPress={() => this._playCurrent()}
+              >
+                <AntDesign name="play" size={32} />
+              </TouchableHighlight>
+            </View>
+            <View
+              style={{
+                flex: 2,
+                justifyContent: "center",
+                alignItems: "center"
+              }}
+            >
+              <TouchableHighlight
+                underlayColor={BACKGROUND_COLOR}
+                onPress={() => {
+                  this.setState({
+                    ...this.state,
+                    currentSentence: this.state.currentSentence + 1
+                  });
+                  this.simpleSound = null;
+                  this._saveCurrentSentenceIndex();
+
+                  this._playCurrent();
+                }}
+              >
+                <AntDesign name="stepforward" size={32} />
+              </TouchableHighlight>
+            </View>
           </View>
           <View />
+          <View
+            style={{
+              flex: 1,
+              flexDirection: "row"
+            }}
+          >
+            <Text
+              style={[styles.liveText, { fontFamily: "cutive-mono-regular" }]}
+            >
+              {this.state.isRecording ? "LIVE" : ""}
+            </Text>
+            <Image
+              style={[
+                styles.image,
+                { opacity: this.state.isRecording ? 1.0 : 0.0 }
+              ]}
+              source={ICON_RECORDING.module}
+            />
+            <Text
+              style={[
+                styles.recordingTimestamp,
+                { fontFamily: "cutive-mono-regular" }
+              ]}
+            >
+              {this._getRecordingTimestamp()}
+            </Text>
+          </View>
         </View>
-        <View
-          style={[
-            styles.halfScreenContainer,
-            {
-              opacity:
-                !this.state.isPlaybackAllowed || this.state.isLoading
-                  ? DISABLED_OPACITY
-                  : 1.0
-            }
-          ]}
-        >
+
+        <View style={[styles.halfScreenContainer]}>
           <View />
           <View style={styles.playbackContainer}>
             <Slider
@@ -453,32 +502,30 @@ export default class App extends React.Component {
           <View
             style={[styles.buttonsContainerBase, styles.buttonsContainerTopRow]}
           >
-            <View style={styles.volumeContainer}>
+            <View
+              style={{
+                flex: 1,
+                alignItems: "center"
+              }}
+            >
               <TouchableHighlight
                 underlayColor={BACKGROUND_COLOR}
-                style={styles.wrapper}
-                onPress={this._onMutePressed}
-                disabled={!this.state.isPlaybackAllowed || this.state.isLoading}
+                style={[styles.wrapper]}
+                onPress={this._onRecordPressed}
+                disabled={this.state.isLoading}
               >
                 <Image
-                  style={styles.image}
-                  source={
-                    this.state.muted
-                      ? ICON_MUTED_BUTTON.module
-                      : ICON_UNMUTED_BUTTON.module
-                  }
+                  style={[styles.image]}
+                  source={ICON_RECORD_BUTTON.module}
                 />
               </TouchableHighlight>
-              <Slider
-                style={styles.volumeSlider}
-                trackImage={ICON_TRACK_1.module}
-                thumbImage={ICON_THUMB_2.module}
-                value={1}
-                onValueChange={this._onVolumeSliderValueChange}
-                disabled={!this.state.isPlaybackAllowed || this.state.isLoading}
-              />
             </View>
-            <View style={styles.playStopContainer}>
+            <View
+              style={{
+                flex: 1,
+                alignItems: "center"
+              }}
+            >
               <TouchableHighlight
                 underlayColor={BACKGROUND_COLOR}
                 style={styles.wrapper}
@@ -486,7 +533,15 @@ export default class App extends React.Component {
                 disabled={!this.state.isPlaybackAllowed || this.state.isLoading}
               >
                 <Image
-                  style={styles.image}
+                  style={[
+                    styles.image,
+                    {
+                      opacity:
+                        !this.state.isPlaybackAllowed || this.state.isLoading
+                          ? DISABLED_OPACITY
+                          : 1.0
+                    }
+                  ]}
                   source={
                     this.state.isPlaying
                       ? ICON_PAUSE_BUTTON.module
@@ -494,55 +549,31 @@ export default class App extends React.Component {
                   }
                 />
               </TouchableHighlight>
+            </View>
+            <View
+              style={{
+                flex: 1,
+                alignItems: "center"
+              }}
+            >
               <TouchableHighlight
                 underlayColor={BACKGROUND_COLOR}
                 style={styles.wrapper}
-                onPress={this._onStopPressed}
-                disabled={!this.state.isPlaybackAllowed || this.state.isLoading}
+                onPress={() => {
+                  this._playCurrent();
+                }}
               >
-                <Image style={styles.image} source={ICON_STOP_BUTTON.module} />
+                <Image
+                  style={styles.image}
+                  source={ICON_UNMUTED_BUTTON.module}
+                />
               </TouchableHighlight>
             </View>
-            <View />
           </View>
-          {/* <View style={[styles.buttonsContainerBase, styles.buttonsContainerBottomRow]}>
-            <Text style={[styles.timestamp, { fontFamily: 'cutive-mono-regular' }]}>Rate:</Text>
-            <Slider
-              style={styles.rateSlider}
-              trackImage={ICON_TRACK_1.module}
-              thumbImage={ICON_THUMB_1.module}
-              value={this.state.rate / RATE_SCALE}
-              onSlidingComplete={this._onRateSliderSlidingComplete}
-              disabled={!this.state.isPlaybackAllowed || this.state.isLoading}
-            />
-            <TouchableHighlight
-              underlayColor={BACKGROUND_COLOR}
-              style={styles.wrapper}
-              onPress={this._onPitchCorrectionPressed}
-              disabled={!this.state.isPlaybackAllowed || this.state.isLoading}>
-              <Text style={[{ fontFamily: 'cutive-mono-regular' }]}>
-                PC: {this.state.shouldCorrectPitch ? 'yes' : 'no'}
-              </Text>
-            </TouchableHighlight>
-          </View> */}
+
           <View />
         </View>
       </View>
     );
-  }
-
-  playCurrent() {
-    const soundObject = new Sound();
-    const position = this.currentSentence.toString();
-    const url = `https://s3.eu-central-1.amazonaws.com/liutaoran.com/audio/10_spektrum_a2-1_${
-      position.length > 1 ? position : "0" + position
-    }.mp3`;
-    soundObject
-      .loadAsync({
-        uri: url
-      })
-      .then(() => {
-        soundObject.playAsync();
-      });
   }
 }
